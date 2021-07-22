@@ -4,6 +4,10 @@ from django.contrib import messages
 from .models import Product, Order, LineItem
 from .forms import CartForm, CheckoutForm
 from . import cart
+from django.conf import settings
+from decimal import Decimal
+from paypal.standard.forms import PayPalPaymentsForm
+from django.views.decorators.csrf import csrf_exempt
 
 # Create your views here.
 
@@ -48,7 +52,7 @@ def show_cart(request):
                                             })
 
 
-def checkout(request):
+'''def checkout(request):
     if request.method == 'POST':
         form = CheckoutForm(request.POST)
         if form.is_valid():
@@ -82,5 +86,71 @@ def checkout(request):
 
     else:
         form = CheckoutForm()
-        return render(request, 'ecommerce_app/checkout.html', {'form': form})
+        return render(request, 'ecommerce_app/checkout.html', {'form': form}) '''
 
+
+#...
+def checkout(request):
+    if request.method == 'POST':
+        form = CheckoutForm(request.POST)
+        if form.is_valid():
+            cleaned_data = form.cleaned_data
+
+            o = Order(
+                    name = cleaned_data.get('name'),
+                    email = cleaned_data.get('email'),
+                    postal_code = cleaned_data.get('postal_code'),
+                    address = cleaned_data.get('address'),
+                )
+            o.save()
+
+            all_items = cart.get_all_cart_items(request)
+            for cart_item in all_items:
+                li = LineItem(
+                    product_id = cart_item.product_id,
+                    price = cart_item.price,
+                    quantity = cart_item.quantity,
+                    order_id = o.id
+                )
+
+                li.save()
+                
+            cart.clear(request)
+ 
+            request.session['order_id'] = o.id
+            messages.add_message(request, messages.INFO, 'Order Placed!')
+            return redirect('process_payment')
+    else:
+        form = CheckoutForm()
+        return render(request, 'ecommerce_app/checkout.html', locals())
+
+ 
+def process_payment(request):
+    order_id = request.session.get('order_id')
+    order = get_object_or_404(Order, id=order_id)
+    host = request.get_host()
+ 
+    paypal_dict = {
+        'business': settings.PAYPAL_RECEIVER_EMAIL,
+        'amount': '%.2f' % order.total_cost().quantize(Decimal('.01')),
+        'item_name': 'Order {}'.format(order.id),
+        'invoice': str(order.id),
+        'currency_code': 'USD',
+        'custom': 'a custom value',
+        'notify_url': 'http://{}{}'.format(host,
+                                           reverse('paypal-ipn')),
+        'return_url': 'http://{}{}'.format(host,
+                                           reverse('payment_done')),
+        'cancel_return': 'http://{}{}'.format(host,
+                                              reverse('payment_cancelled')),
+    }
+ 
+    form = PayPalPaymentsForm(initial=paypal_dict)
+    return render(request, 'ecommerce_app/process_payment.html', {'order': order, 'form': form})
+
+@csrf_exempt
+def payment_done(request):
+    return render(request, 'ecommerce_app/payment_done.html')
+@csrf_exempt
+def payment_canceled(request):
+    return render(request, 'ecommerce_app/payment_cancelled.html')
